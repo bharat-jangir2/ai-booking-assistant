@@ -1,0 +1,318 @@
+"use strict";
+var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
+    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
+    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
+    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    return c > 3 && r && Object.defineProperty(target, key, r), r;
+};
+var __metadata = (this && this.__metadata) || function (k, v) {
+    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+};
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
+var ChatService_1;
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ChatService = void 0;
+const common_1 = require("@nestjs/common");
+const mongoose_1 = require("@nestjs/mongoose");
+const mongoose_2 = require("mongoose");
+const openai_1 = require("openai");
+const booking_schema_1 = require("../schemas/booking.schema");
+let ChatService = ChatService_1 = class ChatService {
+    constructor(bookingModel) {
+        this.bookingModel = bookingModel;
+        this.logger = new common_1.Logger(ChatService_1.name);
+        this.assistantId = null;
+        this.threads = {};
+        this.bookingSaved = {};
+        this.savedBookings = {};
+        this.openai = new openai_1.default({
+            apiKey: process.env.OPENAI_API_KEY,
+        });
+        this.initializeAssistant();
+    }
+    async initializeAssistant() {
+        try {
+            const assistant = await this.openai.beta.assistants.create({
+                name: "Car Booking Assistant",
+                instructions: `You are a helpful car booking assistant. Your job is to collect booking information from users step by step.
+
+Booking Information to Collect:
+1. Customer Name
+2. Mobile Number
+3. Pickup Location
+4. Destination
+5. Pickup Date and Time
+
+Guidelines:
+- Be friendly and professional
+- Ask for one piece of information at a time
+- Validate inputs when possible (e.g., phone number format)
+- Once all information is collected, confirm the booking
+- Use clear, simple language
+- If user provides multiple pieces of information at once, acknowledge and ask for the next required field
+
+When all information is collected, respond with: "BOOKING_COMPLETE" followed by the booking details in JSON format.
+
+Example response when complete:
+"BOOKING_COMPLETE: {
+  "name": "John Doe",
+  "phone": "1234567890",
+  "pickupLocation": "Airport Terminal 1",
+  "destination": "Downtown Hotel",
+  "pickupTime": "2024-01-15 14:30"
+}"`,
+                model: "gpt-4-turbo-preview",
+                tools: [
+                    {
+                        type: "function",
+                        function: {
+                            name: "save_booking",
+                            description: "Save the booking information to the database",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    name: {
+                                        type: "string",
+                                        description: "Customer's full name"
+                                    },
+                                    phone: {
+                                        type: "string",
+                                        description: "Customer's mobile number"
+                                    },
+                                    pickupLocation: {
+                                        type: "string",
+                                        description: "Pickup location address"
+                                    },
+                                    destination: {
+                                        type: "string",
+                                        description: "Destination address"
+                                    },
+                                    pickupTime: {
+                                        type: "string",
+                                        description: "Pickup date and time"
+                                    }
+                                },
+                                required: ["name", "phone", "pickupLocation", "destination", "pickupTime"]
+                            }
+                        }
+                    }
+                ]
+            });
+            this.assistantId = assistant.id;
+            this.logger.log(`✅ Assistant created with ID: ${this.assistantId}`);
+        }
+        catch (error) {
+            this.logger.error('❌ Error creating assistant:', error);
+        }
+    }
+    getMessageText(content) {
+        for (const item of content) {
+            if (item.type === 'text' && item.text) {
+                return item.text.value;
+            }
+        }
+        return '';
+    }
+    async startChat(sessionId) {
+        try {
+            if (!this.assistantId) {
+                throw new Error('Assistant not initialized');
+            }
+            const thread = await this.openai.beta.threads.create();
+            this.threads[sessionId] = thread.id;
+            const message = await this.openai.beta.threads.messages.create(thread.id, {
+                role: "user",
+                content: "Hello! I'd like to book a car. Can you help me with that?"
+            });
+            const run = await this.openai.beta.threads.runs.create(thread.id, {
+                assistant_id: this.assistantId
+            });
+            let runStatus = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
+            while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                runStatus = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
+            }
+            const messages = await this.openai.beta.threads.messages.list(thread.id);
+            const lastMessage = messages.data[0];
+            const replyText = this.getMessageText(lastMessage.content);
+            return {
+                sessionId,
+                reply: replyText
+            };
+        }
+        catch (error) {
+            this.logger.error('Error starting chat:', error);
+            throw new Error('Failed to start chat session');
+        }
+    }
+    async sendMessage(sessionId, message) {
+        try {
+            if (!this.threads[sessionId]) {
+                throw new Error('Invalid session. Please start a new chat.');
+            }
+            const threadId = this.threads[sessionId];
+            await this.openai.beta.threads.messages.create(threadId, {
+                role: "user",
+                content: message
+            });
+            const run = await this.openai.beta.threads.runs.create(threadId, {
+                assistant_id: this.assistantId
+            });
+            let runStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
+            while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                runStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
+            }
+            if (runStatus.status === 'requires_action' && runStatus.required_action?.type === 'submit_tool_outputs') {
+                const toolCalls = runStatus.required_action.submit_tool_outputs.tool_calls;
+                const toolOutputs = [];
+                for (const toolCall of toolCalls) {
+                    if (toolCall.function.name === 'save_booking' && !this.bookingSaved[sessionId]) {
+                        const bookingData = JSON.parse(toolCall.function.arguments);
+                        const booking = new this.bookingModel(bookingData);
+                        const savedBooking = await booking.save();
+                        this.bookingSaved[sessionId] = true;
+                        this.savedBookings[sessionId] = savedBooking;
+                        toolOutputs.push({
+                            tool_call_id: toolCall.id,
+                            output: JSON.stringify({
+                                success: true,
+                                bookingId: savedBooking._id,
+                                message: `Booking confirmed! Booking ID: ${savedBooking._id}`
+                            })
+                        });
+                    }
+                }
+                await this.openai.beta.threads.runs.submitToolOutputs(threadId, run.id, {
+                    tool_outputs: toolOutputs
+                });
+                let finalRunStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
+                while (finalRunStatus.status === 'in_progress' || finalRunStatus.status === 'queued') {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    finalRunStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
+                }
+            }
+            const messages = await this.openai.beta.threads.messages.list(threadId);
+            const lastMessage = messages.data[0];
+            const responseText = this.getMessageText(lastMessage.content);
+            if (responseText.includes('BOOKING_COMPLETE:') && !this.bookingSaved[sessionId]) {
+                this.logger.log('🔍 Detected BOOKING_COMPLETE in response:', responseText);
+                const bookingMatch = responseText.match(/BOOKING_COMPLETE:\s*({[\s\S]*})/);
+                if (bookingMatch) {
+                    try {
+                        this.logger.log('📝 Extracted booking data:', bookingMatch[1]);
+                        const bookingData = JSON.parse(bookingMatch[1]);
+                        this.logger.log('✅ Parsed booking data:', bookingData);
+                        const booking = new this.bookingModel(bookingData);
+                        this.logger.log('💾 Attempting to save booking to database...');
+                        const savedBooking = await booking.save();
+                        this.logger.log('✅ Booking saved successfully:', savedBooking._id);
+                        this.bookingSaved[sessionId] = true;
+                        delete this.threads[sessionId];
+                        delete this.bookingSaved[sessionId];
+                        return {
+                            sessionId,
+                            reply: `✅ **Booking Confirmed!**\n\n📋 **Booking Summary:**\n👤 **Name:** ${savedBooking.name}\n📞 **Phone:** ${savedBooking.phone}\n📍 **Pickup:** ${savedBooking.pickupLocation}\n➡️ **Destination:** ${savedBooking.destination}\n🕓 **Time:** ${savedBooking.pickupTime}\n\n🎫 **Booking ID:** ${savedBooking._id}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
+                            bookingComplete: true,
+                            bookingId: savedBooking._id
+                        };
+                    }
+                    catch (parseError) {
+                        this.logger.error('❌ Error parsing booking data:', parseError);
+                        this.logger.error('❌ Raw booking match:', bookingMatch[1]);
+                        try {
+                            const cleanedData = bookingMatch[1].replace(/\n/g, '').replace(/\r/g, '').trim();
+                            this.logger.log('🧹 Cleaned booking data:', cleanedData);
+                            const bookingData = JSON.parse(cleanedData);
+                            const booking = new this.bookingModel(bookingData);
+                            const savedBooking = await booking.save();
+                            this.logger.log('✅ Booking saved after cleanup:', savedBooking._id);
+                            this.bookingSaved[sessionId] = true;
+                            delete this.threads[sessionId];
+                            delete this.bookingSaved[sessionId];
+                            return {
+                                sessionId,
+                                reply: `✅ **Booking Confirmed!**\n\n📋 **Booking Summary:**\n👤 **Name:** ${savedBooking.name}\n📞 **Phone:** ${savedBooking.phone}\n📍 **Pickup:** ${savedBooking.pickupLocation}\n➡️ **Destination:** ${savedBooking.destination}\n🕓 **Time:** ${savedBooking.pickupTime}\n\n🎫 **Booking ID:** ${savedBooking._id}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
+                                bookingComplete: true,
+                                bookingId: savedBooking._id
+                            };
+                        }
+                        catch (saveError) {
+                            this.logger.error('❌ Failed to save booking after cleanup:', saveError);
+                            return {
+                                sessionId,
+                                reply: '❌ Sorry, there was an error saving your booking. Please try again or contact support.',
+                                error: true
+                            };
+                        }
+                    }
+                }
+                else {
+                    this.logger.log('❌ No booking data found in BOOKING_COMPLETE response');
+                    this.logger.log('🔍 Full response text:', responseText);
+                }
+            }
+            if (this.bookingSaved[sessionId]) {
+                const savedBooking = this.savedBookings[sessionId];
+                delete this.threads[sessionId];
+                delete this.bookingSaved[sessionId];
+                delete this.savedBookings[sessionId];
+                return {
+                    sessionId,
+                    reply: `✅ **Booking Confirmed!**\n\n📋 **Booking Summary:**\n👤 **Name:** ${savedBooking.name}\n📞 **Phone:** ${savedBooking.phone}\n📍 **Pickup:** ${savedBooking.pickupLocation}\n➡️ **Destination:** ${savedBooking.destination}\n🕓 **Time:** ${savedBooking.pickupTime}\n\n🎫 **Booking ID:** ${savedBooking._id}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
+                    bookingComplete: true,
+                    bookingId: savedBooking._id
+                };
+            }
+            return {
+                sessionId,
+                reply: responseText
+            };
+        }
+        catch (error) {
+            this.logger.error('Error in chat:', error);
+            throw new Error('Failed to process message');
+        }
+    }
+    async getAllBookings() {
+        try {
+            return await this.bookingModel.find().sort({ createdAt: -1 }).exec();
+        }
+        catch (error) {
+            this.logger.error('Error fetching bookings:', error);
+            throw new Error('Failed to fetch bookings');
+        }
+    }
+    async testBooking() {
+        try {
+            const testBooking = new this.bookingModel({
+                name: 'Test User',
+                phone: '1234567890',
+                pickupLocation: 'Test Location',
+                destination: 'Test Destination',
+                pickupTime: '2024-01-01 12:00'
+            });
+            const savedBooking = await testBooking.save();
+            this.logger.log('✅ Test booking saved:', savedBooking._id);
+            return {
+                success: true,
+                message: 'Test booking saved successfully',
+                bookingId: savedBooking._id,
+                booking: savedBooking
+            };
+        }
+        catch (error) {
+            this.logger.error('❌ Test booking failed:', error);
+            throw error;
+        }
+    }
+};
+exports.ChatService = ChatService;
+exports.ChatService = ChatService = ChatService_1 = __decorate([
+    (0, common_1.Injectable)(),
+    __param(0, (0, mongoose_1.InjectModel)(booking_schema_1.Booking.name)),
+    __metadata("design:paramtypes", [mongoose_2.Model])
+], ChatService);
+//# sourceMappingURL=chat.service.js.map
