@@ -10,8 +10,9 @@ export class ChatService {
   private openai: OpenAI;
   private assistantId: string | null = null;
   private threads: { [sessionId: string]: string } = {};
-  private bookingSaved: { [sessionId: string]: boolean } = {}; // Track if booking is saved per session
-  private savedBookings: { [sessionId: string]: any } = {}; // Store saved booking data per session
+  private activeRuns: { [threadId: string]: string } = {};
+  private bookingSaved: { [sessionId: string]: boolean } = {};
+  private savedBookings: { [sessionId: string]: any } = {};
 
   constructor(
     @InjectModel(Booking.name) private bookingModel: Model<BookingDocument>,
@@ -175,38 +176,74 @@ Example response when complete:
       const thread = await this.openai.beta.threads.create();
       this.threads[sessionId] = thread.id;
 
-      // Send initial message
-      const message = await this.openai.beta.threads.messages.create(thread.id, {
-        role: "user",
-        content: "Hello! I'd like to book a car. Can you help me with that?"
-      });
+      // For WhatsApp sessions, don't send initial message
+      if (!sessionId.startsWith('whatsapp_')) {
+        // Send initial message only for web interface
+        const message = await this.openai.beta.threads.messages.create(thread.id, {
+          role: "user",
+          content: "Hello! I'd like to book a car. Can you help me with that?"
+        });
 
-      // Run the assistant
-      const run = await this.openai.beta.threads.runs.create(thread.id, {
-        assistant_id: this.assistantId
-      });
+        // Run the assistant
+        const run = await this.openai.beta.threads.runs.create(thread.id, {
+          assistant_id: this.assistantId
+        });
 
-      // Wait for the run to complete
-      let runStatus = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
-      
-      while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        runStatus = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
+        // Track the active run
+        this.activeRuns[thread.id] = run.id;
+
+        // Wait for the run to complete
+        const response = await this.waitForRunCompletion(thread.id, run.id);
+        
+        delete this.activeRuns[thread.id];
+        return response;
       }
 
-      // Get the response
-      const messages = await this.openai.beta.threads.messages.list(thread.id);
-      const lastMessage = messages.data[0];
-      const replyText = this.getMessageText(lastMessage.content);
-
+      // For WhatsApp, just return success without sending initial message
       return {
         sessionId,
-        reply: replyText
+        reply: null
       };
 
     } catch (error) {
       this.logger.error('Error starting chat:', error);
       throw new Error('Failed to start chat session');
+    }
+  }
+
+  private async waitForRunCompletion(threadId: string, runId: string) {
+    try {
+      let runStatus = await this.openai.beta.threads.runs.retrieve(threadId, runId);
+      
+      while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        runStatus = await this.openai.beta.threads.runs.retrieve(threadId, runId);
+      }
+
+      // Handle function calls if needed
+      if (runStatus.status === 'requires_action') {
+        const toolOutputs = await this.handleFunctionCalls(threadId, runId, runStatus);
+        
+        // Submit tool outputs and wait for final response
+        await this.openai.beta.threads.runs.submitToolOutputs(threadId, runId, {
+          tool_outputs: toolOutputs
+        });
+
+        return await this.waitForRunCompletion(threadId, runId);
+      }
+
+      // Get the response
+      const messages = await this.openai.beta.threads.messages.list(threadId);
+      const lastMessage = messages.data[0];
+      const responseText = this.getMessageText(lastMessage.content);
+
+      return {
+        sessionId: Object.keys(this.threads).find(key => this.threads[key] === threadId),
+        reply: responseText
+      };
+    } catch (error) {
+      this.logger.error('Error waiting for run completion:', error);
+      throw error;
     }
   }
 
@@ -228,198 +265,115 @@ Example response when complete:
 
       const threadId = this.threads[sessionId];
 
+      // Check if there's an active run
+      if (this.activeRuns[threadId]) {
+        this.logger.log(`Waiting for previous run ${this.activeRuns[threadId]} to complete...`);
+        await this.waitForRunCompletion(threadId, this.activeRuns[threadId]);
+      }
+
       // Add the user's message to the thread
       await this.openai.beta.threads.messages.create(threadId, {
         role: "user",
         content: message
       });
 
-      // Create a run
+      // Create a new run
       const run = await this.openai.beta.threads.runs.create(threadId, {
         assistant_id: this.assistantId
       });
 
-      // Wait for the run to complete
-      let runStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
+      // Track the active run
+      this.activeRuns[threadId] = run.id;
+
+      // Wait for completion and get response
+      const response = await this.waitForRunCompletion(threadId, run.id);
       
-      while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        runStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
-      }
+      // Clean up active run
+      delete this.activeRuns[threadId];
 
-      // Handle function calls if any
-      if (runStatus.status === 'requires_action' && runStatus.required_action?.type === 'submit_tool_outputs') {
-        const toolCalls = runStatus.required_action.submit_tool_outputs.tool_calls;
-        
-        const toolOutputs = [];
-        
-        for (const toolCall of toolCalls) {
-          if (toolCall.function.name === 'get_booking') {
-            const { bookingId } = JSON.parse(toolCall.function.arguments);
-            try {
-              const booking = await this.getBookingById(bookingId);
-              toolOutputs.push({
-                tool_call_id: toolCall.id,
-                output: JSON.stringify({
-                  success: true,
-                  booking: this.formatBookingForChat(booking)
-                })
-              });
-            } catch (error) {
-              toolOutputs.push({
-                tool_call_id: toolCall.id,
-                output: JSON.stringify({
-                  success: false,
-                  error: error.message
-                })
-              });
-            }
-          } else if (toolCall.function.name === 'parse_date') {
-            toolOutputs.push({
-              tool_call_id: toolCall.id,
-              output: JSON.stringify({
-                success: false,
-                message: `Date parsing is currently disabled.`
-              })
-            });
-          } else if (toolCall.function.name === 'save_booking' && !this.bookingSaved[sessionId]) {
-            const bookingData = JSON.parse(toolCall.function.arguments);
-            
-            // Save to MongoDB
-            const booking = new this.bookingModel(bookingData);
-            const savedBooking = await booking.save();
-            
-            // Mark booking as saved for this session and store the data
-            this.bookingSaved[sessionId] = true;
-            this.savedBookings[sessionId] = savedBooking;
-            
-            toolOutputs.push({
-              tool_call_id: toolCall.id,
-              output: JSON.stringify({
-                success: true,
-                bookingId: savedBooking._id,
-                message: `Booking confirmed! Booking ID: ${savedBooking._id}`
-              })
-            });
-          }
-        }
-
-        // Submit tool outputs
-        await this.openai.beta.threads.runs.submitToolOutputs(threadId, run.id, {
-          tool_outputs: toolOutputs
-        });
-
-        // Wait for the final response
-        let finalRunStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
-        while (finalRunStatus.status === 'in_progress' || finalRunStatus.status === 'queued') {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          finalRunStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
-        }
-      }
-
-      // Get the response
-      const messages = await this.openai.beta.threads.messages.list(threadId);
-      const lastMessage = messages.data[0];
-      const responseText = this.getMessageText(lastMessage.content);
-
-      // Check if booking is complete (only if not already saved via function call)
-      if (responseText.includes('BOOKING_COMPLETE:') && !this.bookingSaved[sessionId]) {
-        this.logger.log('🔍 Detected BOOKING_COMPLETE in response:', responseText);
-        
-        // Extract booking details and save to MongoDB
-        const bookingMatch = responseText.match(/BOOKING_COMPLETE:\s*({[\s\S]*})/);
-        if (bookingMatch) {
-          try {
-            this.logger.log('📝 Extracted booking data:', bookingMatch[1]);
-            const bookingData = JSON.parse(bookingMatch[1]);
-            this.logger.log('✅ Parsed booking data:', bookingData);
-            
-            const booking = new this.bookingModel(bookingData);
-            this.logger.log('💾 Attempting to save booking to database...');
-            
-            const savedBooking = await booking.save();
-            this.logger.log('✅ Booking saved successfully:', savedBooking._id);
-
-            // Mark booking as saved for this session
-            this.bookingSaved[sessionId] = true;
-
-            // Clean up session
-            delete this.threads[sessionId];
-            delete this.bookingSaved[sessionId];
-
-            return {
-              sessionId,
-              reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
-              bookingComplete: true,
-              bookingId: savedBooking._id
-            };
-          } catch (parseError) {
-            this.logger.error('❌ Error parsing booking data:', parseError);
-            this.logger.error('❌ Raw booking match:', bookingMatch[1]);
-            
-            // Try to save even if JSON parsing fails
-            try {
-              // Clean the string and try to parse again
-              const cleanedData = bookingMatch[1].replace(/\n/g, '').replace(/\r/g, '').trim();
-              this.logger.log('🧹 Cleaned booking data:', cleanedData);
-              
-              const bookingData = JSON.parse(cleanedData);
-              const booking = new this.bookingModel(bookingData);
-              const savedBooking = await booking.save();
-              
-              this.logger.log('✅ Booking saved after cleanup:', savedBooking._id);
-              
-              // Mark booking as saved for this session
-              this.bookingSaved[sessionId] = true;
-              
-              delete this.threads[sessionId];
-              delete this.bookingSaved[sessionId];
-              
-              return {
-                sessionId,
-                reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
-                bookingComplete: true,
-                bookingId: savedBooking._id
-              };
-            } catch (saveError) {
-              this.logger.error('❌ Failed to save booking after cleanup:', saveError);
-              return {
-                sessionId,
-                reply: '❌ Sorry, there was an error saving your booking. Please try again or contact support.',
-                error: true
-              };
-            }
-          }
-        } else {
-          this.logger.log('❌ No booking data found in BOOKING_COMPLETE response');
-          this.logger.log('🔍 Full response text:', responseText);
-        }
-      }
-
-      // If booking was saved via function call, return completion message
-      if (this.bookingSaved[sessionId]) {
-        const savedBooking = this.savedBookings[sessionId];
-        delete this.threads[sessionId];
-        delete this.bookingSaved[sessionId];
-        delete this.savedBookings[sessionId];
-        
-        return {
-          sessionId,
-          reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
-          bookingComplete: true,
-          bookingId: savedBooking._id
-        };
-      }
-
-      return {
-        sessionId,
-        reply: responseText
-      };
+      return response;
 
     } catch (error) {
       this.logger.error('Error in chat:', error);
       throw new Error('Failed to process message');
     }
+  }
+
+  private async handleFunctionCalls(threadId: string, runId: string, runStatus: any) {
+    const toolOutputs = [];
+    const toolCalls = runStatus.required_action.submit_tool_outputs.tool_calls;
+    
+    for (const toolCall of toolCalls) {
+      if (toolCall.function.name === 'get_booking') {
+        try {
+          const { bookingId } = JSON.parse(toolCall.function.arguments);
+          const booking = await this.bookingModel.findById(bookingId).exec();
+          
+          if (!booking) {
+            toolOutputs.push({
+              tool_call_id: toolCall.id,
+              output: JSON.stringify({
+                success: false,
+                error: 'Booking not found'
+              })
+            });
+          } else {
+            toolOutputs.push({
+              tool_call_id: toolCall.id,
+              output: JSON.stringify({
+                success: true,
+                booking: {
+                  name: booking.name,
+                  phone: booking.phone,
+                  pickupLocation: booking.pickupLocation,
+                  destination: booking.destination,
+                  pickupTime: booking.pickupTime,
+                  bookingId: booking._id
+                }
+              })
+            });
+          }
+        } catch (error) {
+          this.logger.error('Error fetching booking:', error);
+          toolOutputs.push({
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({
+              success: false,
+              error: 'Failed to fetch booking details'
+            })
+          });
+        }
+      } else if (toolCall.function.name === 'parse_date') {
+        toolOutputs.push({
+          tool_call_id: toolCall.id,
+          output: JSON.stringify({
+            success: false,
+            message: `Date parsing is currently disabled.`
+          })
+        });
+      } else if (toolCall.function.name === 'save_booking') {
+        const sessionId = Object.keys(this.threads).find(key => this.threads[key] === threadId);
+        if (!this.bookingSaved[sessionId]) {
+          const bookingData = JSON.parse(toolCall.function.arguments);
+          const booking = new this.bookingModel(bookingData);
+          const savedBooking = await booking.save();
+          
+          this.bookingSaved[sessionId] = true;
+          this.savedBookings[sessionId] = savedBooking;
+          
+          toolOutputs.push({
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({
+              success: true,
+              bookingId: savedBooking._id,
+              message: `Booking confirmed! Booking ID: ${savedBooking._id}`
+            })
+          });
+        }
+      }
+    }
+    
+    return toolOutputs;
   }
 
   async getAllBookings() {

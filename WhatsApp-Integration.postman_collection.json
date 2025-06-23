@@ -1,0 +1,175 @@
+{
+	"info": {
+		"_postman_id": "random-uuid",
+		"name": "WhatsApp Integration",
+		"description": "Collection for testing WhatsApp Business API integration",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "1. Verify Webhook",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{BASE_URL}}/webhook?hub.mode=subscribe&hub.verify_token={{VERIFY_TOKEN}}&hub.challenge=123456",
+					"host": [
+						"{{BASE_URL}}"
+					],
+					"path": [
+						"webhook"
+					],
+					"query": [
+						{
+							"key": "hub.mode",
+							"value": "subscribe"
+						},
+						{
+							"key": "hub.verify_token",
+							"value": "{{VERIFY_TOKEN}}"
+						},
+						{
+							"key": "hub.challenge",
+							"value": "123456"
+						}
+					]
+				},
+				"description": "Verify webhook endpoint"
+			}
+		},
+		{
+			"name": "2. Send Message",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "Bearer {{ACCESS_TOKEN}}"
+					},
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"messaging_product\": \"whatsapp\",\n    \"recipient_type\": \"individual\",\n    \"to\": \"{{TEST_PHONE_NUMBER}}\",\n    \"type\": \"text\",\n    \"text\": {\n        \"preview_url\": false,\n        \"body\": \"🤖 Hello! This is a test message from your Car Booking Assistant.\"\n    }\n}"
+				},
+				"url": {
+					"raw": "https://graph.facebook.com/v17.0/{{PHONE_NUMBER_ID}}/messages",
+					"protocol": "https",
+					"host": [
+						"graph",
+						"facebook",
+						"com"
+					],
+					"path": [
+						"v17.0",
+						"{{PHONE_NUMBER_ID}}",
+						"messages"
+					]
+				},
+				"description": "Send a test message"
+			}
+		},
+		{
+			"name": "3. Receive Webhook (Simulate)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"object\": \"whatsapp_business_account\",\n    \"entry\": [\n        {\n            \"id\": \"WHATSAPP_BUSINESS_ACCOUNT_ID\",\n            \"changes\": [\n                {\n                    \"value\": {\n                        \"messaging_product\": \"whatsapp\",\n                        \"metadata\": {\n                            \"display_phone_number\": \"{{TEST_PHONE_NUMBER}}\",\n                            \"phone_number_id\": \"{{PHONE_NUMBER_ID}}\"\n                        },\n                        \"messages\": [\n                            {\n                                \"from\": \"{{TEST_PHONE_NUMBER}}\",\n                                \"id\": \"wamid.test123\",\n                                \"timestamp\": \"1677649139\",\n                                \"text\": {\n                                    \"body\": \"I want to book a car\"\n                                },\n                                \"type\": \"text\"\n                            }\n                        ]\n                    },\n                    \"field\": \"messages\"\n                }\n            ]\n        }\n    ]\n}"
+				},
+				"url": {
+					"raw": "{{BASE_URL}}/webhook",
+					"host": [
+						"{{BASE_URL}}"
+					],
+					"path": [
+						"webhook"
+					]
+				},
+				"description": "Simulate receiving a message webhook"
+			}
+		},
+		{
+			"name": "4. Get Phone Number Info",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "Bearer {{ACCESS_TOKEN}}"
+					}
+				],
+				"url": {
+					"raw": "https://graph.facebook.com/v17.0/{{PHONE_NUMBER_ID}}",
+					"protocol": "https",
+					"host": [
+						"graph",
+						"facebook",
+						"com"
+					],
+					"path": [
+						"v17.0",
+						"{{PHONE_NUMBER_ID}}"
+					]
+				},
+				"description": "Get WhatsApp phone number information"
+			}
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "BASE_URL",
+			"value": "https://5c19-2405-201-5c03-685d-fd2d-a1a-e117-d641.ngrok-free.app",
+			"type": "string"
+		},
+		{
+			"key": "VERIFY_TOKEN",
+			"value": "your_verify_token_here",
+			"type": "string"
+		},
+		{
+			"key": "ACCESS_TOKEN",
+			"value": "your_access_token_here",
+			"type": "string"
+		},
+		{
+			"key": "PHONE_NUMBER_ID",
+			"value": "your_phone_number_id_here",
+			"type": "string"
+		},
+		{
+			"key": "TEST_PHONE_NUMBER",
+			"value": "your_whatsapp_number_with_country_code",
+			"type": "string"
+		}
+	]
+} 

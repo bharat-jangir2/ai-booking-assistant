@@ -25,6 +25,7 @@ let ChatService = ChatService_1 = class ChatService {
         this.logger = new common_1.Logger(ChatService_1.name);
         this.assistantId = null;
         this.threads = {};
+        this.activeRuns = {};
         this.bookingSaved = {};
         this.savedBookings = {};
         this.openai = new openai_1.default({
@@ -180,29 +181,54 @@ Example response when complete:
             }
             const thread = await this.openai.beta.threads.create();
             this.threads[sessionId] = thread.id;
-            const message = await this.openai.beta.threads.messages.create(thread.id, {
-                role: "user",
-                content: "Hello! I'd like to book a car. Can you help me with that?"
-            });
-            const run = await this.openai.beta.threads.runs.create(thread.id, {
-                assistant_id: this.assistantId
-            });
-            let runStatus = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
-            while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                runStatus = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
+            if (!sessionId.startsWith('whatsapp_')) {
+                const message = await this.openai.beta.threads.messages.create(thread.id, {
+                    role: "user",
+                    content: "Hello! I'd like to book a car. Can you help me with that?"
+                });
+                const run = await this.openai.beta.threads.runs.create(thread.id, {
+                    assistant_id: this.assistantId
+                });
+                this.activeRuns[thread.id] = run.id;
+                const response = await this.waitForRunCompletion(thread.id, run.id);
+                delete this.activeRuns[thread.id];
+                return response;
             }
-            const messages = await this.openai.beta.threads.messages.list(thread.id);
-            const lastMessage = messages.data[0];
-            const replyText = this.getMessageText(lastMessage.content);
             return {
                 sessionId,
-                reply: replyText
+                reply: null
             };
         }
         catch (error) {
             this.logger.error('Error starting chat:', error);
             throw new Error('Failed to start chat session');
+        }
+    }
+    async waitForRunCompletion(threadId, runId) {
+        try {
+            let runStatus = await this.openai.beta.threads.runs.retrieve(threadId, runId);
+            while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                runStatus = await this.openai.beta.threads.runs.retrieve(threadId, runId);
+            }
+            if (runStatus.status === 'requires_action') {
+                const toolOutputs = await this.handleFunctionCalls(threadId, runId, runStatus);
+                await this.openai.beta.threads.runs.submitToolOutputs(threadId, runId, {
+                    tool_outputs: toolOutputs
+                });
+                return await this.waitForRunCompletion(threadId, runId);
+            }
+            const messages = await this.openai.beta.threads.messages.list(threadId);
+            const lastMessage = messages.data[0];
+            const responseText = this.getMessageText(lastMessage.content);
+            return {
+                sessionId: Object.keys(this.threads).find(key => this.threads[key] === threadId),
+                reply: responseText
+            };
+        }
+        catch (error) {
+            this.logger.error('Error waiting for run completion:', error);
+            throw error;
         }
     }
     formatBookingForChat(booking) {
@@ -220,6 +246,10 @@ Example response when complete:
                 throw new Error('Chat session not found');
             }
             const threadId = this.threads[sessionId];
+            if (this.activeRuns[threadId]) {
+                this.logger.log(`Waiting for previous run ${this.activeRuns[threadId]} to complete...`);
+                await this.waitForRunCompletion(threadId, this.activeRuns[threadId]);
+            }
             await this.openai.beta.threads.messages.create(threadId, {
                 role: "user",
                 content: message
@@ -227,152 +257,90 @@ Example response when complete:
             const run = await this.openai.beta.threads.runs.create(threadId, {
                 assistant_id: this.assistantId
             });
-            let runStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
-            while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                runStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
-            }
-            if (runStatus.status === 'requires_action' && runStatus.required_action?.type === 'submit_tool_outputs') {
-                const toolCalls = runStatus.required_action.submit_tool_outputs.tool_calls;
-                const toolOutputs = [];
-                for (const toolCall of toolCalls) {
-                    if (toolCall.function.name === 'get_booking') {
-                        const { bookingId } = JSON.parse(toolCall.function.arguments);
-                        try {
-                            const booking = await this.getBookingById(bookingId);
-                            toolOutputs.push({
-                                tool_call_id: toolCall.id,
-                                output: JSON.stringify({
-                                    success: true,
-                                    booking: this.formatBookingForChat(booking)
-                                })
-                            });
-                        }
-                        catch (error) {
-                            toolOutputs.push({
-                                tool_call_id: toolCall.id,
-                                output: JSON.stringify({
-                                    success: false,
-                                    error: error.message
-                                })
-                            });
-                        }
-                    }
-                    else if (toolCall.function.name === 'parse_date') {
-                        toolOutputs.push({
-                            tool_call_id: toolCall.id,
-                            output: JSON.stringify({
-                                success: false,
-                                message: `Date parsing is currently disabled.`
-                            })
-                        });
-                    }
-                    else if (toolCall.function.name === 'save_booking' && !this.bookingSaved[sessionId]) {
-                        const bookingData = JSON.parse(toolCall.function.arguments);
-                        const booking = new this.bookingModel(bookingData);
-                        const savedBooking = await booking.save();
-                        this.bookingSaved[sessionId] = true;
-                        this.savedBookings[sessionId] = savedBooking;
-                        toolOutputs.push({
-                            tool_call_id: toolCall.id,
-                            output: JSON.stringify({
-                                success: true,
-                                bookingId: savedBooking._id,
-                                message: `Booking confirmed! Booking ID: ${savedBooking._id}`
-                            })
-                        });
-                    }
-                }
-                await this.openai.beta.threads.runs.submitToolOutputs(threadId, run.id, {
-                    tool_outputs: toolOutputs
-                });
-                let finalRunStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
-                while (finalRunStatus.status === 'in_progress' || finalRunStatus.status === 'queued') {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    finalRunStatus = await this.openai.beta.threads.runs.retrieve(threadId, run.id);
-                }
-            }
-            const messages = await this.openai.beta.threads.messages.list(threadId);
-            const lastMessage = messages.data[0];
-            const responseText = this.getMessageText(lastMessage.content);
-            if (responseText.includes('BOOKING_COMPLETE:') && !this.bookingSaved[sessionId]) {
-                this.logger.log('🔍 Detected BOOKING_COMPLETE in response:', responseText);
-                const bookingMatch = responseText.match(/BOOKING_COMPLETE:\s*({[\s\S]*})/);
-                if (bookingMatch) {
-                    try {
-                        this.logger.log('📝 Extracted booking data:', bookingMatch[1]);
-                        const bookingData = JSON.parse(bookingMatch[1]);
-                        this.logger.log('✅ Parsed booking data:', bookingData);
-                        const booking = new this.bookingModel(bookingData);
-                        this.logger.log('💾 Attempting to save booking to database...');
-                        const savedBooking = await booking.save();
-                        this.logger.log('✅ Booking saved successfully:', savedBooking._id);
-                        this.bookingSaved[sessionId] = true;
-                        delete this.threads[sessionId];
-                        delete this.bookingSaved[sessionId];
-                        return {
-                            sessionId,
-                            reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
-                            bookingComplete: true,
-                            bookingId: savedBooking._id
-                        };
-                    }
-                    catch (parseError) {
-                        this.logger.error('❌ Error parsing booking data:', parseError);
-                        this.logger.error('❌ Raw booking match:', bookingMatch[1]);
-                        try {
-                            const cleanedData = bookingMatch[1].replace(/\n/g, '').replace(/\r/g, '').trim();
-                            this.logger.log('🧹 Cleaned booking data:', cleanedData);
-                            const bookingData = JSON.parse(cleanedData);
-                            const booking = new this.bookingModel(bookingData);
-                            const savedBooking = await booking.save();
-                            this.logger.log('✅ Booking saved after cleanup:', savedBooking._id);
-                            this.bookingSaved[sessionId] = true;
-                            delete this.threads[sessionId];
-                            delete this.bookingSaved[sessionId];
-                            return {
-                                sessionId,
-                                reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
-                                bookingComplete: true,
-                                bookingId: savedBooking._id
-                            };
-                        }
-                        catch (saveError) {
-                            this.logger.error('❌ Failed to save booking after cleanup:', saveError);
-                            return {
-                                sessionId,
-                                reply: '❌ Sorry, there was an error saving your booking. Please try again or contact support.',
-                                error: true
-                            };
-                        }
-                    }
-                }
-                else {
-                    this.logger.log('❌ No booking data found in BOOKING_COMPLETE response');
-                    this.logger.log('🔍 Full response text:', responseText);
-                }
-            }
-            if (this.bookingSaved[sessionId]) {
-                const savedBooking = this.savedBookings[sessionId];
-                delete this.threads[sessionId];
-                delete this.bookingSaved[sessionId];
-                delete this.savedBookings[sessionId];
-                return {
-                    sessionId,
-                    reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
-                    bookingComplete: true,
-                    bookingId: savedBooking._id
-                };
-            }
-            return {
-                sessionId,
-                reply: responseText
-            };
+            this.activeRuns[threadId] = run.id;
+            const response = await this.waitForRunCompletion(threadId, run.id);
+            delete this.activeRuns[threadId];
+            return response;
         }
         catch (error) {
             this.logger.error('Error in chat:', error);
             throw new Error('Failed to process message');
         }
+    }
+    async handleFunctionCalls(threadId, runId, runStatus) {
+        const toolOutputs = [];
+        const toolCalls = runStatus.required_action.submit_tool_outputs.tool_calls;
+        for (const toolCall of toolCalls) {
+            if (toolCall.function.name === 'get_booking') {
+                try {
+                    const { bookingId } = JSON.parse(toolCall.function.arguments);
+                    const booking = await this.bookingModel.findById(bookingId).exec();
+                    if (!booking) {
+                        toolOutputs.push({
+                            tool_call_id: toolCall.id,
+                            output: JSON.stringify({
+                                success: false,
+                                error: 'Booking not found'
+                            })
+                        });
+                    }
+                    else {
+                        toolOutputs.push({
+                            tool_call_id: toolCall.id,
+                            output: JSON.stringify({
+                                success: true,
+                                booking: {
+                                    name: booking.name,
+                                    phone: booking.phone,
+                                    pickupLocation: booking.pickupLocation,
+                                    destination: booking.destination,
+                                    pickupTime: booking.pickupTime,
+                                    bookingId: booking._id
+                                }
+                            })
+                        });
+                    }
+                }
+                catch (error) {
+                    this.logger.error('Error fetching booking:', error);
+                    toolOutputs.push({
+                        tool_call_id: toolCall.id,
+                        output: JSON.stringify({
+                            success: false,
+                            error: 'Failed to fetch booking details'
+                        })
+                    });
+                }
+            }
+            else if (toolCall.function.name === 'parse_date') {
+                toolOutputs.push({
+                    tool_call_id: toolCall.id,
+                    output: JSON.stringify({
+                        success: false,
+                        message: `Date parsing is currently disabled.`
+                    })
+                });
+            }
+            else if (toolCall.function.name === 'save_booking') {
+                const sessionId = Object.keys(this.threads).find(key => this.threads[key] === threadId);
+                if (!this.bookingSaved[sessionId]) {
+                    const bookingData = JSON.parse(toolCall.function.arguments);
+                    const booking = new this.bookingModel(bookingData);
+                    const savedBooking = await booking.save();
+                    this.bookingSaved[sessionId] = true;
+                    this.savedBookings[sessionId] = savedBooking;
+                    toolOutputs.push({
+                        tool_call_id: toolCall.id,
+                        output: JSON.stringify({
+                            success: true,
+                            bookingId: savedBooking._id,
+                            message: `Booking confirmed! Booking ID: ${savedBooking._id}`
+                        })
+                    });
+                }
+            }
+        }
+        return toolOutputs;
     }
     async getAllBookings() {
         try {

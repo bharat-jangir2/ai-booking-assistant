@@ -17,16 +17,25 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
-  "keywords": ["chatbot", "openai", "car-booking", "assistant", "nestjs"],
+  "keywords": [
+    "chatbot",
+    "openai",
+    "car-booking",
+    "assistant",
+    "nestjs"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@nestjs/common": "^10.0.0",
+    "@nestjs/config": "^3.0.0",
     "@nestjs/core": "^10.0.0",
     "@nestjs/mongoose": "^10.0.0",
     "@nestjs/platform-express": "^10.0.0",
-    "@nestjs/config": "^3.0.0",
+    "@nestjs/schedule": "^6.0.0",
     "@nestjs/serve-static": "^4.0.0",
+    "axios": "^1.10.0",
+    "dotenv": "^16.5.0",
     "mongoose": "^8.0.3",
     "openai": "^4.20.1",
     "reflect-metadata": "^0.1.13",

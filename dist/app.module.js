@@ -16,6 +16,7 @@ const app_controller_1 = require("./app.controller");
 const chat_controller_1 = require("./chat/chat.controller");
 const chat_service_1 = require("./chat/chat.service");
 const booking_schema_1 = require("./schemas/booking.schema");
+const whatsapp_module_1 = require("./whatsapp/whatsapp.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -32,6 +33,7 @@ exports.AppModule = AppModule = __decorate([
             mongoose_1.MongooseModule.forFeature([
                 { name: booking_schema_1.Booking.name, schema: booking_schema_1.BookingSchema }
             ]),
+            whatsapp_module_1.WhatsappModule,
         ],
         controllers: [app_controller_1.AppController, chat_controller_1.ChatController],
         providers: [chat_service_1.ChatService],

@@ -6,35 +6,17 @@ export declare class ChatService {
     private openai;
     private assistantId;
     private threads;
+    private activeRuns;
     private bookingSaved;
     private savedBookings;
     constructor(bookingModel: Model<BookingDocument>);
     private initializeAssistant;
     private getMessageText;
-    startChat(sessionId: string): Promise<{
-        sessionId: string;
-        reply: string;
-    }>;
+    startChat(sessionId: string): Promise<any>;
+    private waitForRunCompletion;
     private formatBookingForChat;
-    sendMessage(sessionId: string, message: string): Promise<{
-        sessionId: string;
-        reply: string;
-        error: boolean;
-        bookingComplete?: undefined;
-        bookingId?: undefined;
-    } | {
-        sessionId: string;
-        reply: string;
-        bookingComplete: boolean;
-        bookingId: any;
-        error?: undefined;
-    } | {
-        sessionId: string;
-        reply: string;
-        error?: undefined;
-        bookingComplete?: undefined;
-        bookingId?: undefined;
-    }>;
+    sendMessage(sessionId: string, message: string): Promise<any>;
+    private handleFunctionCalls;
     getAllBookings(): Promise<(import("mongoose").Document<unknown, {}, BookingDocument, {}> & Booking & import("mongoose").Document<unknown, any, any, Record<string, any>> & Required<{
         _id: unknown;
     }> & {

@@ -7,6 +7,7 @@ import { AppController } from './app.controller';
 import { ChatController } from './chat/chat.controller';
 import { ChatService } from './chat/chat.service';
 import { Booking, BookingSchema } from './schemas/booking.schema';
+import { WhatsappModule } from './whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { Booking, BookingSchema } from './schemas/booking.schema';
     MongooseModule.forFeature([
       { name: Booking.name, schema: BookingSchema }
     ]),
+    WhatsappModule,
   ],
   controllers: [AppController, ChatController],
   providers: [ChatService],
