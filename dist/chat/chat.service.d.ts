@@ -15,6 +15,7 @@ export declare class ChatService {
         sessionId: string;
         reply: string;
     }>;
+    private formatBookingForChat;
     sendMessage(sessionId: string, message: string): Promise<{
         sessionId: string;
         reply: string;
@@ -39,6 +40,11 @@ export declare class ChatService {
     }> & {
         __v: number;
     })[]>;
+    getBookingById(bookingId: string): Promise<import("mongoose").Document<unknown, {}, BookingDocument, {}> & Booking & import("mongoose").Document<unknown, any, any, Record<string, any>> & Required<{
+        _id: unknown;
+    }> & {
+        __v: number;
+    }>;
     testBooking(): Promise<{
         success: boolean;
         message: string;

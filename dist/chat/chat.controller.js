@@ -52,6 +52,24 @@ let ChatController = class ChatController {
             });
         }
     }
+    async getBookingById(id, res) {
+        try {
+            const booking = await this.chatService.getBookingById(id);
+            res.json(booking);
+        }
+        catch (error) {
+            if (error.message === 'Booking not found') {
+                res.status(common_1.HttpStatus.NOT_FOUND).json({
+                    error: 'Booking not found'
+                });
+            }
+            else {
+                res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({
+                    error: error.message || 'Failed to fetch booking'
+                });
+            }
+        }
+    }
     async testBooking(res) {
         try {
             const result = await this.chatService.testBooking();
@@ -96,6 +114,14 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], ChatController.prototype, "getAllBookings", null);
+__decorate([
+    (0, common_1.Get)('bookings/:id'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], ChatController.prototype, "getBookingById", null);
 __decorate([
     (0, common_1.Post)('test-booking'),
     __param(0, (0, common_1.Res)()),

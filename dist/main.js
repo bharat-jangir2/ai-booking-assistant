@@ -5,7 +5,7 @@ const app_module_1 = require("./app.module");
 async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule);
     app.enableCors();
-    const port = process.env.PORT || 3000;
+    const port = process.env.PORT || 5000;
     await app.listen(port);
     console.log(`🚗 Car Booking Chatbot server running on port ${port}`);
     console.log(`🌐 Chat UI: http://localhost:${port}`);

@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, Body, Res, HttpStatus, Param } from '@nestjs/common';
 import { Response } from 'express';
 import { ChatService } from './chat.service';
 
@@ -39,6 +39,24 @@ export class ChatController {
       res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ 
         error: error.message || 'Failed to fetch bookings' 
       });
+    }
+  }
+
+  @Get('bookings/:id')
+  async getBookingById(@Param('id') id: string, @Res() res: Response) {
+    try {
+      const booking = await this.chatService.getBookingById(id);
+      res.json(booking);
+    } catch (error) {
+      if (error.message === 'Booking not found') {
+        res.status(HttpStatus.NOT_FOUND).json({
+          error: 'Booking not found'
+        });
+      } else {
+        res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+          error: error.message || 'Failed to fetch booking'
+        });
+      }
     }
   }
 

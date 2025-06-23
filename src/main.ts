@@ -7,7 +7,7 @@ async function bootstrap() {
   // Enable CORS
   app.enableCors();
   
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT || 5000;
   await app.listen(port);
   
   console.log(`🚗 Car Booking Chatbot server running on port ${port}`);

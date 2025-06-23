@@ -26,8 +26,21 @@ export class ChatService {
     try {
       const assistant = await this.openai.beta.assistants.create({
         name: "Car Booking Assistant",
-        instructions: `You are a helpful car booking assistant. Your job is to collect booking information from users step by step.
+        instructions: `IMPORTANT: Only answer questions related to car booking. 
+If the user asks about anything else (e.g., weather, news, general questions), respond with: 
+"Sorry, I can only assist with car bookings. Please provide your booking details."
 
+You are a helpful car booking assistant. Your job is to:
+1. Collect booking information from users step by step for new bookings
+2. Help users check their existing booking details when they provide a booking ID
+
+For Checking Booking Details:
+- When users ask about their booking or provide a booking ID, use the get_booking function to fetch the details
+- Format the response in a user-friendly way
+- If the booking is not found, inform the user politely
+- If there's an error, apologize and ask them to try again
+
+For New Bookings:
 Booking Information to Collect:
 1. Customer Name
 2. Mobile Number
@@ -43,6 +56,16 @@ Guidelines:
 - Use clear, simple language
 - If user provides multiple pieces of information at once, acknowledge and ask for the next required field
 
+Date Handling:
+- When asking for pickup date and time, be flexible with date formats
+- If user provides only a day (e.g., "15"), assume current month and year
+- If user provides day/month (e.g., "15/3"), assume current year
+- If user provides day + month name (e.g., "25 june", "15 january"), assume current year
+- Accept formats like: "15", "15/3", "15-3", "25 june", "15 january", "2024-03-15", "15/3/2024"
+- Always convert dates to YYYY-MM-DD format for the final booking
+- Use the parse_date function when you need to convert user date input to proper format
+- When user provides a date, use parse_date function to ensure it's in the correct format before saving
+
 When all information is collected, respond with: "BOOKING_COMPLETE" followed by the booking details in JSON format.
 
 Example response when complete:
@@ -55,6 +78,40 @@ Example response when complete:
 }"`,
         model: "gpt-4-turbo-preview",
         tools: [
+          {
+            type: "function",
+            function: {
+              name: "get_booking",
+              description: "Fetch booking details using booking ID",
+              parameters: {
+                type: "object",
+                properties: {
+                  bookingId: {
+                    type: "string",
+                    description: "The ID of the booking to fetch"
+                  }
+                },
+                required: ["bookingId"]
+              }
+            }
+          },
+          {
+            type: "function",
+            function: {
+              name: "parse_date",
+              description: "Parse date input and convert to YYYY-MM-DD format. Supports day only (uses current month/year), day/month (uses current year), day + month name (e.g., '25 june' uses current year), and full dates.",
+              parameters: {
+                type: "object",
+                properties: {
+                  dateInput: {
+                    type: "string",
+                    description: "Date input from user (can be just day, day/month, day + month name, or full date)"
+                  }
+                },
+                required: ["dateInput"]
+              }
+            }
+          },
           {
             type: "function",
             function: {
@@ -81,7 +138,7 @@ Example response when complete:
                   },
                   pickupTime: {
                     type: "string",
-                    description: "Pickup date and time"
+                    description: "Pickup date and time in YYYY-MM-DD HH:MM format"
                   }
                 },
                 required: ["name", "phone", "pickupLocation", "destination", "pickupTime"]
@@ -92,9 +149,10 @@ Example response when complete:
       });
       
       this.assistantId = assistant.id;
-      this.logger.log(`✅ Assistant created with ID: ${this.assistantId}`);
+      this.logger.log('✅ Assistant created successfully');
     } catch (error) {
       this.logger.error('❌ Error creating assistant:', error);
+      throw error;
     }
   }
 
@@ -152,21 +210,31 @@ Example response when complete:
     }
   }
 
+  private formatBookingForChat(booking: BookingDocument) {
+    return `📋 **Booking Details**
+👤 **Name:** ${booking.name}
+📞 **Phone:** ${booking.phone}
+📍 **Pickup:** ${booking.pickupLocation}
+➡️ **Destination:** ${booking.destination}
+🕓 **Pickup Time:** ${booking.pickupTime}
+🎫 **Booking ID:** ${booking._id}`;
+  }
+
   async sendMessage(sessionId: string, message: string) {
     try {
       if (!this.threads[sessionId]) {
-        throw new Error('Invalid session. Please start a new chat.');
+        throw new Error('Chat session not found');
       }
 
       const threadId = this.threads[sessionId];
 
-      // Add user message to thread
+      // Add the user's message to the thread
       await this.openai.beta.threads.messages.create(threadId, {
         role: "user",
         content: message
       });
 
-      // Run the assistant
+      // Create a run
       const run = await this.openai.beta.threads.runs.create(threadId, {
         assistant_id: this.assistantId
       });
@@ -186,7 +254,35 @@ Example response when complete:
         const toolOutputs = [];
         
         for (const toolCall of toolCalls) {
-          if (toolCall.function.name === 'save_booking' && !this.bookingSaved[sessionId]) {
+          if (toolCall.function.name === 'get_booking') {
+            const { bookingId } = JSON.parse(toolCall.function.arguments);
+            try {
+              const booking = await this.getBookingById(bookingId);
+              toolOutputs.push({
+                tool_call_id: toolCall.id,
+                output: JSON.stringify({
+                  success: true,
+                  booking: this.formatBookingForChat(booking)
+                })
+              });
+            } catch (error) {
+              toolOutputs.push({
+                tool_call_id: toolCall.id,
+                output: JSON.stringify({
+                  success: false,
+                  error: error.message
+                })
+              });
+            }
+          } else if (toolCall.function.name === 'parse_date') {
+            toolOutputs.push({
+              tool_call_id: toolCall.id,
+              output: JSON.stringify({
+                success: false,
+                message: `Date parsing is currently disabled.`
+              })
+            });
+          } else if (toolCall.function.name === 'save_booking' && !this.bookingSaved[sessionId]) {
             const bookingData = JSON.parse(toolCall.function.arguments);
             
             // Save to MongoDB
@@ -253,7 +349,7 @@ Example response when complete:
 
             return {
               sessionId,
-              reply: `✅ **Booking Confirmed!**\n\n📋 **Booking Summary:**\n👤 **Name:** ${savedBooking.name}\n📞 **Phone:** ${savedBooking.phone}\n📍 **Pickup:** ${savedBooking.pickupLocation}\n➡️ **Destination:** ${savedBooking.destination}\n🕓 **Time:** ${savedBooking.pickupTime}\n\n🎫 **Booking ID:** ${savedBooking._id}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
+              reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
               bookingComplete: true,
               bookingId: savedBooking._id
             };
@@ -281,7 +377,7 @@ Example response when complete:
               
               return {
                 sessionId,
-                reply: `✅ **Booking Confirmed!**\n\n📋 **Booking Summary:**\n👤 **Name:** ${savedBooking.name}\n📞 **Phone:** ${savedBooking.phone}\n📍 **Pickup:** ${savedBooking.pickupLocation}\n➡️ **Destination:** ${savedBooking.destination}\n🕓 **Time:** ${savedBooking.pickupTime}\n\n🎫 **Booking ID:** ${savedBooking._id}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
+                reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
                 bookingComplete: true,
                 bookingId: savedBooking._id
               };
@@ -309,7 +405,7 @@ Example response when complete:
         
         return {
           sessionId,
-          reply: `✅ **Booking Confirmed!**\n\n📋 **Booking Summary:**\n👤 **Name:** ${savedBooking.name}\n📞 **Phone:** ${savedBooking.phone}\n📍 **Pickup:** ${savedBooking.pickupLocation}\n➡️ **Destination:** ${savedBooking.destination}\n🕓 **Time:** ${savedBooking.pickupTime}\n\n🎫 **Booking ID:** ${savedBooking._id}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
+          reply: `✅ **Booking Confirmed!**\n\n${this.formatBookingForChat(savedBooking)}\n\nThank you for choosing our service! We'll contact you shortly to confirm your booking.`,
           bookingComplete: true,
           bookingId: savedBooking._id
         };
@@ -332,6 +428,19 @@ Example response when complete:
     } catch (error) {
       this.logger.error('Error fetching bookings:', error);
       throw new Error('Failed to fetch bookings');
+    }
+  }
+
+  async getBookingById(bookingId: string) {
+    try {
+      const booking = await this.bookingModel.findById(bookingId).exec();
+      if (!booking) {
+        throw new Error('Booking not found');
+      }
+      return booking;
+    } catch (error) {
+      this.logger.error(`Error fetching booking with ID ${bookingId}:`, error);
+      throw new Error('Failed to fetch booking');
     }
   }
 
