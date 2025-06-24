@@ -96,6 +96,12 @@ export class TokenService implements OnModuleInit {
 
   async updateToken(newToken: string, expirationDays: number = 7) {
     try {
+      // Ensure expirationDays is not too large
+      if (expirationDays > 60) {
+        this.logger.warn('Expiration days capped at 60 days');
+        expirationDays = 60;
+      }
+
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + expirationDays);
 
