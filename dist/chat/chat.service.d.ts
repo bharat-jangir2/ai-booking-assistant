@@ -27,6 +27,11 @@ export declare class ChatService {
     }> & {
         __v: number;
     }>;
+    getBookingsByPhone(phone: string): Promise<(import("mongoose").Document<unknown, {}, BookingDocument, {}> & Booking & import("mongoose").Document<unknown, any, any, Record<string, any>> & Required<{
+        _id: unknown;
+    }> & {
+        __v: number;
+    })[]>;
     testBooking(): Promise<{
         success: boolean;
         message: string;
@@ -36,5 +41,12 @@ export declare class ChatService {
         }> & {
             __v: number;
         };
+    }>;
+    testMultipleBookings(): Promise<{
+        success: boolean;
+        message: string;
+        phone: string;
+        count: number;
+        bookings: any[];
     }>;
 }

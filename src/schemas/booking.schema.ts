@@ -8,7 +8,7 @@ export class Booking {
   @Prop({ required: true })
   name: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, index: true })
   phone: string;
 
   @Prop({ required: true })

@@ -34,12 +34,31 @@ If the user asks about anything else (e.g., weather, news, general questions), r
 You are a helpful car booking assistant. Your job is to:
 1. Collect booking information from users step by step for new bookings
 2. Help users check their existing booking details when they provide a booking ID
+3. Help users view all their bookings when they provide their mobile number
 
 For Checking Booking Details:
 - When users ask about their booking or provide a booking ID, use the get_booking function to fetch the details
 - Format the response in a user-friendly way
 - If the booking is not found, inform the user politely
 - If there's an error, apologize and ask them to try again
+
+For Viewing All Bookings by Mobile Number:
+- When users ask to see all their bookings or provide their mobile number, use the get_bookings_by_phone function
+- If they provide a mobile number, fetch all their bookings
+- Format the response to show all bookings in a clear, organized way
+- If no bookings are found, inform them politely
+- If there's an error, apologize and ask them to try again
+
+when bookings are fetched successfully then respond with following format.
+Example response when complete: 
+" ` +
+    `🆔 *Booking ID:* {1255551df1214d65f}` +
+    `👤 *Name:* {bharat}\n\n` +
+    `📞 *Phone:* {9876543210}\n\n ` +
+    `📍 *Pickup Location:*{Airport Terminal 1}\n\n` +
+    `🏁 *Destination:* {Airport Terminal 1}\n\n` +
+    `🕒 *Pickup Time:*{25 june 2025 12:00}\n\n` +
+    `Your booking is confirmed! If you need to check your booking details or have any other requests, feel free to ask."
 
 For New Bookings:
 Booking Information to Collect:
@@ -94,6 +113,23 @@ Example response when complete:
                   }
                 },
                 required: ["bookingId"]
+              }
+            }
+          },
+          {
+            type: "function",
+            function: {
+              name: "get_bookings_by_phone",
+              description: "Fetch all bookings for a specific mobile number",
+              parameters: {
+                type: "object",
+                properties: {
+                  phone: {
+                    type: "string",
+                    description: "The mobile number to search bookings for"
+                  }
+                },
+                required: ["phone"]
               }
             }
           },
@@ -183,7 +219,7 @@ Example response when complete:
         const message = await this.openai.beta.threads.messages.create(thread.id, {
           role: "user",
           content: "Hello! I'd like to book a car. Can you help me with that?"
-        });
+        }); 
 
         // Run the assistant
         const run = await this.openai.beta.threads.runs.create(thread.id, {
@@ -217,7 +253,7 @@ Example response when complete:
       let runStatus = await this.openai.beta.threads.runs.retrieve(threadId, runId);
       
       while (runStatus.status === 'in_progress' || runStatus.status === 'queued') {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 500));
         runStatus = await this.openai.beta.threads.runs.retrieve(threadId, runId);
       }
 
@@ -344,6 +380,45 @@ Example response when complete:
             })
           });
         }
+      } else if (toolCall.function.name === 'get_bookings_by_phone') {
+        try {
+          const { phone } = JSON.parse(toolCall.function.arguments);
+          const bookings = await this.bookingModel.find({ phone: phone }).exec();
+          
+          if (bookings.length === 0) {
+            toolOutputs.push({
+              tool_call_id: toolCall.id,
+              output: JSON.stringify({
+                success: false,
+                error: 'No bookings found'
+              })
+            });
+          } else {
+            toolOutputs.push({
+              tool_call_id: toolCall.id,
+              output: JSON.stringify({
+                success: true,
+                bookings: bookings.map(booking => ({
+                  name: booking.name,
+                  phone: booking.phone,
+                  pickupLocation: booking.pickupLocation,
+                  destination: booking.destination,
+                  pickupTime: booking.pickupTime,
+                  bookingId: booking._id
+                }))
+              })
+            });
+          }
+        } catch (error) {
+          this.logger.error('Error fetching bookings:', error);
+          toolOutputs.push({
+            tool_call_id: toolCall.id,
+            output: JSON.stringify({
+              success: false,
+              error: 'Failed to fetch bookings'
+            })
+          });
+        }
       } else if (toolCall.function.name === 'parse_date') {
         toolOutputs.push({
           tool_call_id: toolCall.id,
@@ -399,6 +474,16 @@ Example response when complete:
     }
   }
 
+  async getBookingsByPhone(phone: string) {
+    try {
+      const bookings = await this.bookingModel.find({ phone: phone }).sort({ createdAt: -1 }).exec();
+      return bookings;
+    } catch (error) {
+      this.logger.error(`Error fetching bookings for phone ${phone}:`, error);
+      throw new Error('Failed to fetch bookings');
+    }
+  }
+
   async testBooking() {
     try {
       const testBooking = new this.bookingModel({
@@ -420,6 +505,55 @@ Example response when complete:
       };
     } catch (error) {
       this.logger.error('❌ Test booking failed:', error);
+      throw error;
+    }
+  }
+
+  async testMultipleBookings() {
+    try {
+      const testPhone = '9876543210';
+      const testBookings = [
+        {
+          name: 'John Doe',
+          phone: testPhone,
+          pickupLocation: 'Airport Terminal 1',
+          destination: 'Downtown Hotel',
+          pickupTime: '2024-01-15 10:00'
+        },
+        {
+          name: 'John Doe',
+          phone: testPhone,
+          pickupLocation: 'Downtown Hotel',
+          destination: 'Airport Terminal 1',
+          pickupTime: '2024-01-20 14:00'
+        },
+        {
+          name: 'John Doe',
+          phone: testPhone,
+          pickupLocation: 'Shopping Mall',
+          destination: 'Home Address',
+          pickupTime: '2024-01-25 16:00'
+        }
+      ];
+
+      const savedBookings = [];
+      for (const bookingData of testBookings) {
+        const booking = new this.bookingModel(bookingData);
+        const savedBooking = await booking.save();
+        savedBookings.push(savedBooking);
+      }
+
+      this.logger.log(`✅ ${savedBookings.length} test bookings saved for phone ${testPhone}`);
+      
+      return {
+        success: true,
+        message: 'Multiple test bookings saved successfully',
+        phone: testPhone,
+        count: savedBookings.length,
+        bookings: savedBookings
+      };
+    } catch (error) {
+      this.logger.error('❌ Multiple test bookings failed:', error);
       throw error;
     }
   }

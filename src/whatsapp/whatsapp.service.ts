@@ -80,8 +80,6 @@ export class WhatsappService {
           const initResult = await this.chatService.startChat(sessionId);
           this.activeSessions.add(sessionId);
           this.logger.log(`Chat session initialized for ${sessionId}`);
-          
-          // Don't send the initial response immediately, let the first user message be processed
         } catch (error) {
           this.logger.error(`Failed to initialize chat session for ${sessionId}:`, error);
           await this.sendWhatsAppMessage(
@@ -92,27 +90,28 @@ export class WhatsappService {
         }
       }
 
-      // Process message through chat service
+      // 1. Send immediate feedback
+      await this.sendWhatsAppMessage(message.from, 'Processing your request...');
+
+      // 2. Process message through chat service
       const response = await this.chatService.sendMessage(sessionId, messageText);
 
-      // Handle booking completion
+      // 3. Handle booking completion
       if (response.bookingComplete) {
         this.activeSessions.delete(sessionId);
         this.logger.log(`Booking completed for ${sessionId}`);
       }
 
-      // Send response back to WhatsApp
+      // 4. Send actual response
       if (response.reply) {
         await this.sendWhatsAppMessage(message.from, response.reply);
       }
 
     } catch (error) {
       this.logger.error('Error processing WhatsApp message:', error);
-      
       // Clean up failed session
       const sessionId = `whatsapp_${message.from}`;
       this.activeSessions.delete(sessionId);
-      
       await this.sendWhatsAppMessage(
         message.from,
         'Sorry, there was an error processing your message. Please try starting a new booking.'

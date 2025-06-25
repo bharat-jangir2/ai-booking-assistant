@@ -60,10 +60,41 @@ export class ChatController {
     }
   }
 
+  @Get('bookings/phone/:phone')
+  async getBookingsByPhone(@Param('phone') phone: string, @Res() res: Response) {
+    try {
+      const bookings = await this.chatService.getBookingsByPhone(phone);
+      res.json({
+        success: true,
+        count: bookings.length,
+        bookings: bookings
+      });
+    } catch (error) {
+      res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        success: false,
+        error: error.message || 'Failed to fetch bookings'
+      });
+    }
+  }
+
   @Post('test-booking')
   async testBooking(@Res() res: Response) {
     try {
       const result = await this.chatService.testBooking();
+      res.json(result);
+    } catch (error) {
+      res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        success: false,
+        error: error.message,
+        stack: error.stack
+      });
+    }
+  }
+
+  @Post('test-multiple-bookings')
+  async testMultipleBookings(@Res() res: Response) {
+    try {
+      const result = await this.chatService.testMultipleBookings();
       res.json(result);
     } catch (error) {
       res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({

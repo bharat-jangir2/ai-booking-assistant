@@ -12,6 +12,8 @@ export declare class ChatController {
     }, res: Response): Promise<void>;
     getAllBookings(res: Response): Promise<void>;
     getBookingById(id: string, res: Response): Promise<void>;
+    getBookingsByPhone(phone: string, res: Response): Promise<void>;
     testBooking(res: Response): Promise<void>;
+    testMultipleBookings(res: Response): Promise<void>;
     healthCheck(res: Response): Promise<void>;
 }

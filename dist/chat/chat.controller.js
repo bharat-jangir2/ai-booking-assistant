@@ -70,9 +70,38 @@ let ChatController = class ChatController {
             }
         }
     }
+    async getBookingsByPhone(phone, res) {
+        try {
+            const bookings = await this.chatService.getBookingsByPhone(phone);
+            res.json({
+                success: true,
+                count: bookings.length,
+                bookings: bookings
+            });
+        }
+        catch (error) {
+            res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({
+                success: false,
+                error: error.message || 'Failed to fetch bookings'
+            });
+        }
+    }
     async testBooking(res) {
         try {
             const result = await this.chatService.testBooking();
+            res.json(result);
+        }
+        catch (error) {
+            res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({
+                success: false,
+                error: error.message,
+                stack: error.stack
+            });
+        }
+    }
+    async testMultipleBookings(res) {
+        try {
+            const result = await this.chatService.testMultipleBookings();
             res.json(result);
         }
         catch (error) {
@@ -123,12 +152,27 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], ChatController.prototype, "getBookingById", null);
 __decorate([
+    (0, common_1.Get)('bookings/phone/:phone'),
+    __param(0, (0, common_1.Param)('phone')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], ChatController.prototype, "getBookingsByPhone", null);
+__decorate([
     (0, common_1.Post)('test-booking'),
     __param(0, (0, common_1.Res)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], ChatController.prototype, "testBooking", null);
+__decorate([
+    (0, common_1.Post)('test-multiple-bookings'),
+    __param(0, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], ChatController.prototype, "testMultipleBookings", null);
 __decorate([
     (0, common_1.Get)('health'),
     __param(0, (0, common_1.Res)()),
